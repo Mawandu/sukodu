@@ -1,0 +1,13 @@
+# Fichiers de l'environnement virtuel Python
+env/
+venv/
+*.venv
+
+# Fichiers cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Autres
+.DS_Store
