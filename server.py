@@ -11,14 +11,14 @@ clients = []
 joueurs_symboles = {}
 partie = Jeu(taille=GRID_SIZE)
 verrou = threading.Lock()
-restart_votes = []
+restart_requester = None # MODIFIÉ: Gère la demande de revanche
 
 def envoyer_a_tous(message):
     for client in clients:
         client.sendall((message + '\n').encode())
 
 def handle_client(conn, addr):
-    global partie
+    global partie, restart_requester
     print(f"Nouvelle connexion de {addr}")
     
     try:
@@ -35,7 +35,7 @@ def handle_client(conn, addr):
         if len(clients) == 2:
             print("Deux joueurs connectés. La partie commence.")
             partie.reinitialiser()
-            restart_votes.clear()
+            restart_requester = None
             envoyer_a_tous(f"GAME_START|{partie.tour_joueur}")
             
             joueur_qui_commence = next(c for c, s in joueurs_symboles.items() if s == partie.tour_joueur)
@@ -49,6 +49,8 @@ def handle_client(conn, addr):
             buffer += data
             while '\n' in buffer:
                 message, buffer = buffer.split('\n', 1)
+                if not message: continue
+                
                 commande, *params = message.strip().split('|')
 
                 with verrou:
@@ -67,23 +69,34 @@ def handle_client(conn, addr):
                         else:
                             conn.sendall("INVALID_MOVE|Mouvement invalide\n".encode())
                     
-                    elif commande == 'RESTART':
-                        if conn not in restart_votes:
-                            restart_votes.append(conn)
-                        if len(restart_votes) == 2:
-                            print("Redémarrage de la partie.")
+                    # MODIFIÉ: Nouvelle logique de revanche
+                    elif commande == 'RESTART_REQ':
+                        if restart_requester is None:
+                            restart_requester = conn
+                            adversaire = next(c for c in clients if c != conn)
+                            adversaire.sendall("RESTART_OFFER\n".encode())
+                    
+                    elif commande == 'RESTART_RSP':
+                        if restart_requester is None: continue # Ignore les réponses tardives
+                        
+                        reponse = params[0]
+                        if reponse == 'yes':
                             partie.reinitialiser()
-                            restart_votes.clear()
                             envoyer_a_tous(f"GAME_START|{partie.tour_joueur}")
                             joueur_qui_commence = next(c for c, s in joueurs_symboles.items() if s == partie.tour_joueur)
                             joueur_qui_commence.sendall("YOUR_TURN|C'est a vous de jouer\n".encode())
+                        else: # La réponse est 'no'
+                            restart_requester.sendall("RESTART_FAIL|Votre adversaire a refuse la revanche.\n".encode())
+                        
+                        restart_requester = None # Réinitialiser la demande après traitement
+
     finally:
         print(f"Déconnexion de {addr}")
         with verrou:
             if conn in clients:
                 clients.remove(conn)
             joueurs_symboles.pop(conn, None)
-            restart_votes.clear() # On nettoie les votes au cas où
+            restart_requester = None
             if len(clients) == 1:
                 clients[0].sendall("OPPONENT_LEFT\n".encode())
         conn.close()

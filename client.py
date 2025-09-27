@@ -1,4 +1,4 @@
-# Fichier: client.py 
+# Fichier: client.py
 import socket
 import threading
 import tkinter as tk
@@ -10,22 +10,18 @@ GRID_SIZE = 15
 PORT = 65432
 
 class GameGUI(tk.Frame):
-    def __init__(self, master, mode, server_ip=None):
+    def __init__(self, master, mode):
         super().__init__(master)
         self.pack(fill="both", expand=True)
         self.master = master
         self.master.title("Jeu de Carré")
-        
         self.mode = mode
         self.create_widgets()
 
-        if self.mode == "Réseau":
-            self.init_network_mode(server_ip)
-        else: # Mode IA
+        if self.mode == "IA":
             self.init_ai_mode()
 
     def create_widgets(self):
-        # Cette méthode est identique à la version précédente
         grid_frame = tk.Frame(self)
         grid_frame.pack(pady=10, padx=10)
         
@@ -42,38 +38,29 @@ class GameGUI(tk.Frame):
         control_frame = tk.Frame(self)
         control_frame.pack(pady=10)
 
-        self.restart_button = tk.Button(control_frame, text="Recommencer", font=('Arial', 12), command=self.request_restart)
+        self.restart_button = tk.Button(control_frame, text="Recommencer", font=('Arial', 12), command=self.request_restart, state=tk.DISABLED)
         self.restart_button.pack(side=tk.LEFT, padx=10)
 
         quit_button = tk.Button(control_frame, text="Quitter", font=('Arial', 12), command=self.on_closing)
         quit_button.pack(side=tk.LEFT, padx=10)
 
-    # --- Initialisation des modes ---
-    def init_network_mode(self, server_ip):
-        self.my_symbol = None
-        self.is_my_turn = False
-        self.message_queue = queue.Queue()
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connect_to_server(server_ip)
-
     def init_ai_mode(self):
         self.jeu_local = Jeu(taille=GRID_SIZE)
         self.info_label.config(text="Vous êtes 'X'. À vous de jouer.")
-        self.restart_button.config(command=self.reset_ai_game)
+        self.restart_button.config(command=self.reset_ai_game, state=tk.NORMAL)
 
     def reset_ai_game(self):
         self.jeu_local.reinitialiser()
         self.clear_board()
         self.info_label.config(text="Vous êtes 'X'. À vous de jouer.")
 
-    # --- Logique de clic ---
     def on_grid_click(self, r, c):
         if self.mode == "Réseau":
             if self.is_my_turn and self.buttons[r][c]['text'] == ' ':
                 self.send_message(f"MOVE|{r}|{c}\n")
                 self.is_my_turn = False
                 self.info_label.config(text="Tour de l'adversaire...")
-        else: # Mode IA
+        else:
             if not self.jeu_local.partie_terminee and self.buttons[r][c]['text'] == ' ':
                 self.jeu_local.placer_pion(r, c)
                 self.update_board(r, c, 'X')
@@ -83,8 +70,12 @@ class GameGUI(tk.Frame):
                     self.info_label.config(text="L'IA réfléchit...")
                     self.master.after(500, self.make_ai_move)
 
-    # --- Méthodes Réseau ---
     def connect_to_server(self, server_ip):
+        self.my_symbol = None
+        self.is_my_turn = False
+        self.message_queue = queue.Queue()
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
         try:
             self.client_socket.connect((server_ip, PORT))
             self.info_label.config(text="Connecté. En attente d'un autre joueur...")
@@ -95,9 +86,10 @@ class GameGUI(tk.Frame):
 
             self.master.after(100, self.process_queue)
             self.send_message(f"JOIN|Joueur\n")
+            return True
         except Exception as e:
             messagebox.showerror("Erreur de connexion", f"Impossible de se connecter au serveur:\n{e}")
-            self.on_closing()
+            return False
     
     def receive_messages(self):
         buffer = ""
@@ -119,7 +111,8 @@ class GameGUI(tk.Frame):
         except queue.Empty:
             pass
         finally:
-            self.master.after(100, self.process_queue)
+            if self.winfo_exists():
+                self.master.after(100, self.process_queue)
 
     def handle_server_message(self, message):
         parts = message.split('|')
@@ -131,25 +124,34 @@ class GameGUI(tk.Frame):
         elif command == "GAME_START":
             self.clear_board()
             self.info_label.config(text=f"La partie commence ! Tour de '{parts[1]}'")
+            self.restart_button.config(state=tk.DISABLED)
         elif command == "YOUR_TURN":
             self.is_my_turn = True
             self.info_label.config(text="C'est votre tour !")
         elif command == "UPDATE":
             r, c, symbol = int(parts[1]), int(parts[2]), parts[3]
             self.update_board(r, c, symbol)
-        elif command == "WIN":
+        elif command == "WIN" or command == "DRAW":
             self.is_my_turn = False
-            messagebox.showinfo("Partie terminée", f"Le joueur '{parts[1]}' a gagné !")
-        elif command == "DRAW":
-            self.is_my_turn = False
-            messagebox.showinfo("Partie terminée", "Match nul !")
+            self.restart_button.config(state=tk.NORMAL)
+            if command == "WIN":
+                messagebox.showinfo("Partie terminée", f"Le joueur '{parts[1]}' a gagné !")
+            else:
+                messagebox.showinfo("Partie terminée", "Match nul !")
+        elif command == "RESTART_OFFER":
+            reponse = messagebox.askyesno("Demande de revanche", "Votre adversaire souhaite rejouer. Acceptez-vous ?")
+            self.send_message(f"RESTART_RSP|{'yes' if reponse else 'no'}\n")
+        elif command == "RESTART_FAIL":
+            messagebox.showinfo("Demande refusée", parts[1])
+            self.info_label.config(text="Votre demande de revanche a été refusée.")
+            self.restart_button.config(state=tk.NORMAL)
         elif command == "OPPONENT_LEFT":
             messagebox.showinfo("Info", "Votre adversaire a quitté la partie.")
         elif "SERVER_DOWN" in command:
-            messagebox.showerror("Erreur", "Connexion au serveur perdue.")
-            self.on_closing()
-
-    # --- Méthodes IA ---
+            if self.winfo_exists():
+                messagebox.showerror("Erreur", "Connexion au serveur perdue.")
+                self.on_closing()
+    
     def make_ai_move(self):
         if self.jeu_local.partie_terminee: return
         move = self.find_best_move()
@@ -163,7 +165,7 @@ class GameGUI(tk.Frame):
                 self.info_label.config(text="Vous êtes 'X'. À vous de jouer.")
 
     def find_best_move(self):
-        # Cette logique est identique à la version précédente
+        # Chercher un coup gagnant pour l'IA ('O')
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 if self.jeu_local.grille[r][c] == ' ':
@@ -172,6 +174,7 @@ class GameGUI(tk.Frame):
                         self.jeu_local.grille[r][c] = ' '
                         return (r, c)
                     self.jeu_local.grille[r][c] = ' '
+        # Bloquer le joueur ('X')
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 if self.jeu_local.grille[r][c] == ' ':
@@ -180,8 +183,10 @@ class GameGUI(tk.Frame):
                         self.jeu_local.grille[r][c] = ' '
                         return (r, c)
                     self.jeu_local.grille[r][c] = ' '
+        # Jouer au centre si libre
         if self.jeu_local.grille[GRID_SIZE // 2][GRID_SIZE // 2] == ' ':
             return (GRID_SIZE // 2, GRID_SIZE // 2)
+        # Jouer le premier coup libre
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 if self.jeu_local.grille[r][c] == ' ':
@@ -195,7 +200,6 @@ class GameGUI(tk.Frame):
         else:
             messagebox.showinfo("Partie terminée", "Match nul !")
 
-    # --- Utilitaires ---
     def update_board(self, r, c, symbol):
         color = 'blue' if symbol == 'X' else 'red'
         self.buttons[r][c].config(text=symbol, state=tk.DISABLED, disabledforeground=color)
@@ -207,8 +211,9 @@ class GameGUI(tk.Frame):
     
     def request_restart(self):
         if self.mode == "Réseau":
-            self.send_message("RESTART\n")
-            self.info_label.config(text="Demande de redémarrage envoyée...")
+            self.send_message("RESTART_REQ\n")
+            self.info_label.config(text="Demande de revanche envoyée, en attente de la réponse...")
+            self.restart_button.config(state=tk.DISABLED)
         else:
             self.reset_ai_game()
     
@@ -218,13 +223,10 @@ class GameGUI(tk.Frame):
 
     def on_closing(self):
         if self.mode == "Réseau" and hasattr(self, 'client_socket'):
-            try:
-                self.client_socket.close()
-            except:
-                pass
+            try: self.client_socket.close()
+            except: pass
         self.master.destroy()
 
-# --- Classe principale de lancement ---
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -244,13 +246,17 @@ class App(tk.Tk):
         server_ip = simpledialog.askstring("Adresse du Serveur", "Entrez l'adresse IP du serveur:", parent=self)
         if server_ip:
             self.clear_window()
-            self.geometry("") # Reset geometry to fit the game board
-            game = GameGUI(self, mode="Réseau", server_ip=server_ip)
-            self.protocol("WM_DELETE_WINDOW", game.on_closing)
+            self.geometry("")
+            game = GameGUI(self, mode="Réseau")
+            
+            if game.connect_to_server(server_ip):
+                self.protocol("WM_DELETE_WINDOW", game.on_closing)
+            else:
+                self.destroy()
 
     def start_ai_game(self):
         self.clear_window()
-        self.geometry("") # Reset geometry to fit the game board
+        self.geometry("")
         game = GameGUI(self, mode="IA")
         self.protocol("WM_DELETE_WINDOW", game.on_closing)
 
